@@ -52,31 +52,29 @@ uint8_t try_connect;
 
 ESP8266WebServer server(80);
 
-const char NO_CONNECT_PAGE[] PROGMEM =
+const char NEW_MESSAGE_PAGE[] PROGMEM =
   "<html>"
   "  <body>"
   "    <h1>Standalone Mode</h1>"
   "    <h2>Connect to AP</h2>"
-  "    <form action=\"/connect\" method=\"get\">"
-  "      AP: <input type=\"text\" name=\"ap\"><br/>"
-  "      Password: <input type=\"text\" name=\"password\"></br>"
+  "    <form action=\"/message\" method=\"get\">"
+  "      Message: <textarea rows=\"4\" cols=\"50\" name=\"message\"></textarea><br/>"
   "      <input type=\"submit\" value=\"Submit\">"
   "    </form>"
   "  </body>"
   "</html>";
 
 void handleRoot() {
-  server.send(200, "text/html", NO_CONNECT_PAGE);
+  server.send(200, "text/html", NEW_MESSAGE_PAGE);
 }
 
-void handleConnect() {
-  String result;
-  try_ssid = server.arg("ap");
-  try_password = server.arg("password");
+void handleMessage() {
+  String msg = server.arg("message");
 
-  result = "<html><h1>Got " + try_ssid + ": " + try_password + "</h1></html>";
-  server.send(200, "text/html", result);
-  try_connect = true;
+  tft.fillScreen(ILI9341_BLACK);
+  tft.print(msg);
+  
+  server.send(200, "text/html", NEW_MESSAGE_PAGE);
 }
 
 void setup() {
@@ -89,7 +87,7 @@ void setup() {
 
   tft.begin();
   tft.setRotation(1);
-  tft.setTextColor(ILI9341_YELLOW); tft.setTextSize(2);
+  tft.setTextColor(ILI9341_WHITE); tft.setTextSize(3);
 
   tft.fillScreen(ILI9341_BLACK);
   tft.println("Startup");
@@ -107,7 +105,7 @@ void loop() {
   if (state == FSM::SETUP) {
     WiFi.softAP(ssid, password);
     server.on("/", handleRoot);
-    server.on("/connect", handleConnect);
+    server.on("/message", handleMessage);
 
     server.begin();
     state = FSM::CONNECTING_AP;
@@ -133,14 +131,11 @@ void loop() {
     }
   }
   else if (state == FSM::CONNECTED_CLIENT) {
-    if(WiFi.status() == WL_CONNECTION_LOST) {
-      try_connect = true;
-      state = FSM::CONNECT_CLIENT;
-    }
+
   }
 
   server.handleClient();
-  Serial.println(WiFi.status());
+
   
   if (last_state != state) {
     tft.print(FSM::StateStr[last_state]);
