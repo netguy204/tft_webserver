@@ -90,6 +90,10 @@ void urldecode2(char *dst, const char *src)
       *dst++ = 16*a+b;
       src+=3;
     } 
+    else if((*src == '+')) {
+      *dst++ = ' ';
+      src++;
+    }
     else {
       *dst++ = *src++;
     }
