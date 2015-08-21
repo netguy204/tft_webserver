@@ -3,6 +3,7 @@
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
 #include <EEPROM.h>
+#include <Wstring.h>
 
 #include "SPI.h"
 #include "Adafruit_GFX.h"
@@ -116,26 +117,26 @@ uint8_t state, last_state;
 
 ESP8266WebServer server(80);
 
-const char PAGE_HEADER[] =
+const char PAGE_HEADER[] PROGMEM =
   "<html>"
   "  <body>"
   "    <h1>Office Screen</h1>";
 
-const char PAGE_FOOTER[] =
+const char PAGE_FOOTER[] PROGMEM =
   "  </body>"
   "</html>";
   
-const char NEW_MESSAGE_HEADER[] =
+const char NEW_MESSAGE_HEADER[] PROGMEM =
   "    <h2>Update Message</h2>"
   "    <form action=\"/message\" method=\"get\">"
   "      Message: <textarea rows=\"4\" cols=\"50\" name=\"message\">";
   
-const char NEW_MESSAGE_FOOTER[] =
+const char NEW_MESSAGE_FOOTER[] PROGMEM =
   "      </textarea><br/>"
   "      <input type=\"submit\" value=\"Submit\">"
   "    </form>";
 
-const char LOGIN_SECTION[] =
+const char LOGIN_SECTION[] PROGMEM =
   "    <h2>Login to AP</h2>"
   "    <form action=\"/login\" method=\"get\">"
   "      AP Name: <input name=\"ap\"><br/>"
@@ -143,19 +144,22 @@ const char LOGIN_SECTION[] =
   "      <input type=\"submit\" value=\"Submit\">"
   "    </form>";
 
+class __FlashStringHelper;
+#define FPSTR(pstr_pointer) (reinterpret_cast<const __FlashStringHelper *>(pstr_pointer))
+
 String newMessageChunk() {
-  String result = NEW_MESSAGE_HEADER;
+  String result = FPSTR(NEW_MESSAGE_HEADER);
   result += FSM::info.message;
-  result += NEW_MESSAGE_FOOTER;
+  result += FPSTR(NEW_MESSAGE_FOOTER);
   return result;
 }
 
 String newLoginChunk() {
-  return LOGIN_SECTION;
+  return FPSTR(LOGIN_SECTION);
 }
 
 String newMessagePage() {
-  String result = PAGE_HEADER;
+  String result = FPSTR(PAGE_HEADER);
   result += newMessageChunk();
   if(!FSM::info.login_valid) {
     result += newLoginChunk();
@@ -164,7 +168,7 @@ String newMessagePage() {
     result += "  <input type=\"submit\" value=\"Logout\">";
     result += "</form>";
   }
-  result += PAGE_FOOTER;
+  result += FPSTR(PAGE_FOOTER);
   return result;
 }
 
