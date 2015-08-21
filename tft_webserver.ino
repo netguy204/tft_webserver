@@ -32,6 +32,9 @@ const char *password = "ofthefuture";
   g(CONNECT_CLIENT), \
   g(CONNECTING_CLIENT), \
   g(CONNECTED_CLIENT), \
+  g(INTERNET), \
+  g(NOINTERNET), \
+  g(FETCHING), \
   g(MAX)
 
 
@@ -40,6 +43,8 @@ struct Info {
   char ssid[32];
   char password[32];
   char message[512];
+  char msghost[32];
+  char msgpath[32];
   int8_t login_valid : 1;
 };
 
@@ -116,6 +121,7 @@ void urldecode2(char *dst, const char *src)
 uint8_t state, last_state;
 
 ESP8266WebServer server(80);
+WiFiClient client;
 
 const char PAGE_HEADER[] PROGMEM =
   "<html>"
@@ -141,6 +147,8 @@ const char LOGIN_SECTION[] PROGMEM =
   "    <form action=\"/login\" method=\"get\">"
   "      AP Name: <input name=\"ap\"><br/>"
   "      Password: <input name=\"password\"></br/>"
+  "      Message HOST: <input name=\"msghost\"><br/>"
+  "      Message Path: <input name=\"msgpath\"><br/>"
   "      <input type=\"submit\" value=\"Submit\">"
   "    </form>";
 
@@ -190,10 +198,11 @@ void handleMessage() {
 }
 
 void handleLogin() {
-  String ap = server.arg("ap");
-  String pw = server.arg("password");
-  strncpy(FSM::info.ssid, ap.c_str(), sizeof(FSM::info.ssid));
-  strncpy(FSM::info.password, pw.c_str(), sizeof(FSM::info.password));
+  urldecode2(FSM::info.ssid, server.arg("ap").c_str());
+  urldecode2(FSM::info.password, server.arg("password").c_str());
+  urldecode2(FSM::info.msghost, server.arg("msghost").c_str());
+  urldecode2(FSM::info.msgpath, server.arg("msgpath").c_str());
+
   FSM::info.login_valid = true;
   writeInfo();
   server.send(200, "text/html", "<html><body><h1>Attempting login</h1></body></html>");
@@ -209,6 +218,7 @@ void handleLogout() {
 void handleClearInfo() {
   memset(FSM::info.ssid, 0, sizeof(FSM::info.ssid));
   memset(FSM::info.password, 0, sizeof(FSM::info.password));
+  memset(FSM::info.msghost, 0, sizeof(FSM::info.msghost));
   FSM::info.login_valid = false;
   writeInfo();
   ESP.restart();
@@ -234,6 +244,14 @@ void setup() {
   tft.fillScreen(ILI9341_BLACK);
   tft.setCursor(0, 0);
   tft.println("Startup");
+}
+
+uint32_t fetch_delay;
+void timerReset() {
+  fetch_delay = millis();
+}
+uint32_t timerValue() {
+  return millis() - fetch_delay;
 }
 
 void loop() {
@@ -282,7 +300,38 @@ void loop() {
       ESP.restart();
     }
   }
-  else if (state == FSM::CONNECTED_CLIENT && !FSM::info.login_valid) {
+  else if (state == FSM::CONNECTED_CLIENT) {
+    if(client.connect(FSM::info.msghost, 80)) {
+      timerReset();
+      state = FSM::INTERNET;
+    } else {
+      state = FSM::NOINTERNET;
+    }
+  }
+  else if (state == FSM::INTERNET && !client) {
+    // disconnected
+    state = FSM::CONNECTED_CLIENT;
+    timerReset();
+  }
+  else if (state == FSM::INTERNET && timerValue() > 1000) {
+    client.print(String("GET ") + FSM::info.msgpath + " HTTP/1.1\r\n" +
+                 "Host: " + FSM::info.msghost + "\r\n" +
+                 "Connection: close\r\n\r\n");
+    state = FSM::FETCHING;
+    timerReset();
+  }
+  else if (state == FSM::FETCHING && timerValue() > 1000) {
+    while(client.available()) {
+      String line = client.readStringUntil('\r');
+      Serial.println(line);
+    }
+    state = FSM::CONNECTED_CLIENT;
+    timerReset();
+  }
+  else if (state == FSM::NOINTERNET && timerValue() > 10000) {
+    state = FSM::CONNECTED_CLIENT;
+  } 
+  else if ((state == FSM::INTERNET || state == FSM::NOINTERNET) && !FSM::info.login_valid) {
     // reboot into an AP
     ESP.restart();
   }
