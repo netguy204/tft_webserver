@@ -2,6 +2,7 @@
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
+#include <EEPROM.h>
 
 #include "SPI.h"
 #include "Adafruit_GFX.h"
@@ -33,6 +34,14 @@ const char *password = "ofthefuture";
   g(MAX)
 
 
+// persisted info
+struct Info {
+  char ssid[32];
+  char password[32];
+  char message[512];
+  int8_t login_valid : 1;
+};
+
 class FSM {
   public:
     enum State {
@@ -40,32 +49,33 @@ class FSM {
     };
 
     static const char* StateStr[MAX + 1];
+    static Info info;
 };
 
 const char* FSM::StateStr[MAX + 1] = {
   STATES(GEN_STRING)
 };
 
-uint8_t state, last_state;
-String try_ssid, try_password;
-uint8_t try_connect;
 
-ESP8266WebServer server(80);
+Info FSM::info;
 
-const char NEW_MESSAGE_PAGE[] PROGMEM =
-  "<html>"
-  "  <body>"
-  "    <h1>Standalone Mode</h1>"
-  "    <h2>Connect to AP</h2>"
-  "    <form action=\"/message\" method=\"get\">"
-  "      Message: <textarea rows=\"4\" cols=\"50\" name=\"message\"></textarea><br/>"
-  "      <input type=\"submit\" value=\"Submit\">"
-  "    </form>"
-  "  </body>"
-  "</html>";
+void readInfo() {
+  Info* infop = &FSM::info;
+  uint8_t* infob = (uint8_t*)infop;
+  
+  for(uint16_t ii = 0; ii < sizeof(Info); ++ii) {
+    infob[ii] = EEPROM.read(ii);
+  }
+}
 
-void handleRoot() {
-  server.send(200, "text/html", NEW_MESSAGE_PAGE);
+void writeInfo() {
+  Info* infop = &FSM::info;
+  uint8_t* infob = (uint8_t*)infop;
+  
+  for(uint16_t ii = 0; ii < sizeof(Info); ++ii) {
+    EEPROM.write(ii, infob[ii]);
+  }
+  EEPROM.commit();
 }
 
 void urldecode2(char *dst, const char *src)
@@ -101,28 +111,121 @@ void urldecode2(char *dst, const char *src)
   *dst++ = '\0';
 }
 
+
+uint8_t state, last_state;
+
+ESP8266WebServer server(80);
+
+const char PAGE_HEADER[] =
+  "<html>"
+  "  <body>"
+  "    <h1>Office Screen</h1>";
+
+const char PAGE_FOOTER[] =
+  "  </body>"
+  "</html>";
+  
+const char NEW_MESSAGE_HEADER[] =
+  "    <h2>Update Message</h2>"
+  "    <form action=\"/message\" method=\"get\">"
+  "      Message: <textarea rows=\"4\" cols=\"50\" name=\"message\">";
+  
+const char NEW_MESSAGE_FOOTER[] =
+  "      </textarea><br/>"
+  "      <input type=\"submit\" value=\"Submit\">"
+  "    </form>";
+
+const char LOGIN_SECTION[] =
+  "    <h2>Login to AP</h2>"
+  "    <form action=\"/login\" method=\"get\">"
+  "      AP Name: <input name=\"ap\"><br/>"
+  "      Password: <input name=\"password\"></br/>"
+  "      <input type=\"submit\" value=\"Submit\">"
+  "    </form>";
+
+String newMessageChunk() {
+  String result = NEW_MESSAGE_HEADER;
+  result += FSM::info.message;
+  result += NEW_MESSAGE_FOOTER;
+  return result;
+}
+
+String newLoginChunk() {
+  return LOGIN_SECTION;
+}
+
+String newMessagePage() {
+  String result = PAGE_HEADER;
+  result += newMessageChunk();
+  if(!FSM::info.login_valid) {
+    result += newLoginChunk();
+  } else {
+    result += "<form action=\"/logout\" method=\"get\">";
+    result += "  <input type=\"submit\" value=\"Logout\">";
+    result += "</form>";
+  }
+  result += PAGE_FOOTER;
+  return result;
+}
+
+void handleRoot() {
+  server.send(200, "text/html", newMessagePage());
+}
+
 void handleMessage() {
   char msg[512];
   urldecode2(msg, server.arg("message").c_str());
-
-  tft.fillScreen(ILI9341_BLACK);
+  memcpy(FSM::info.message, msg, sizeof(msg));
+  writeInfo();
+  
+  tft.fillScreen(ILI9341_BLUE);
   tft.setCursor(0, 0);
   tft.print(msg);
   
-  server.send(200, "text/html", NEW_MESSAGE_PAGE);
+  server.send(200, "text/html", newMessagePage());
+}
+
+void handleLogin() {
+  String ap = server.arg("ap");
+  String pw = server.arg("password");
+  strncpy(FSM::info.ssid, ap.c_str(), sizeof(FSM::info.ssid));
+  strncpy(FSM::info.password, pw.c_str(), sizeof(FSM::info.password));
+  FSM::info.login_valid = true;
+  writeInfo();
+  server.send(200, "text/html", "<html><body><h1>Attempting login</h1></body></html>");
+}
+
+void handleLogout() {
+  FSM::info.login_valid = false;
+  writeInfo();
+  server.send(200, "text/html", "<html><body><h1>Logging out</h1></body></html>");
+}
+
+
+void handleClearInfo() {
+  memset(FSM::info.ssid, 0, sizeof(FSM::info.ssid));
+  memset(FSM::info.password, 0, sizeof(FSM::info.password));
+  FSM::info.login_valid = false;
+  writeInfo();
+  ESP.restart();
+  server.send(200, "text/html", "<html><body><h1>Clearing info, Restarting...</h1></body></html>");
 }
 
 void setup() {
   Serial.begin(9600);
   Serial.println("Setup");
 
+  EEPROM.begin(sizeof(Info));
+  readInfo();
+  Serial.println("Loaded Info");
+  
   last_state = FSM::BOOT;
   state = FSM::SETUP;
-  try_connect = false;
 
   tft.begin();
   tft.setRotation(1);
-  tft.setTextColor(ILI9341_WHITE); tft.setTextSize(3);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(2);
 
   tft.fillScreen(ILI9341_BLACK);
   tft.setCursor(0, 0);
@@ -130,44 +233,54 @@ void setup() {
 }
 
 void loop() {
-  if (try_connect) {
-    if (state == FSM::CONNECTED_AP) {
-      //WiFi.softAPdisconnect();
-    }
-    state = FSM::CONNECT_CLIENT;
-    try_connect = true;
-  }
-
   if (state == FSM::SETUP) {
-    WiFi.softAP(ssid, password);
     server.on("/", handleRoot);
     server.on("/message", handleMessage);
+    server.on("/login", handleLogin);
+    server.on("/logout", handleLogout);
+    server.on("/clear", handleClearInfo);
 
     server.begin();
+    if(FSM::info.login_valid) {
+      state = FSM::CONNECT_CLIENT;
+    } else {
+      state = FSM::CONNECT_AP;
+    }
+  }
+  else if (state == FSM::CONNECT_AP) {
+    WiFi.softAP(ssid, password);
     state = FSM::CONNECTING_AP;
   }
-  else if (state == FSM::CONNECT_AP || state == FSM::CONNECTING_AP) {
+  else if (state == FSM::CONNECTING_AP) {
     IPAddress myIP = WiFi.softAPIP();
     tft.print("AP Created: ");
     tft.println(myIP);
     state = FSM::CONNECTED_AP;
   }
+  else if (state == FSM::CONNECTED_AP && FSM::info.login_valid) {
+    // reboot which will make us reconnect as a client
+    ESP.restart();
+  }
   else if (state == FSM::CONNECT_CLIENT) {
-    WiFi.begin(try_ssid.c_str(), try_password.c_str());
+    WiFi.begin(FSM::info.ssid, FSM::info.password);
     state = FSM::CONNECTING_CLIENT;
   }
   else if (state == FSM::CONNECTING_CLIENT) {
     uint8_t status = WiFi.waitForConnectResult();
-    if(status == WIFI_STA) {
+    if(status == WL_CONNECTED) {
       state = FSM::CONNECTED_CLIENT;
       tft.print("Connected: ");
       tft.println(WiFi.localIP());
     } else {
-      state = FSM::CONNECT_AP;
+      // failed to connect, invalidate credentials and restart
+      FSM::info.login_valid = false;
+      writeInfo();
+      ESP.restart();
     }
   }
-  else if (state == FSM::CONNECTED_CLIENT) {
-
+  else if (state == FSM::CONNECTED_CLIENT && !FSM::info.login_valid) {
+    // reboot into an AP
+    ESP.restart();
   }
 
   server.handleClient();
