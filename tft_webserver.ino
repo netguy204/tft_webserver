@@ -1,3 +1,6 @@
+#include <b64.h>
+#include <HttpClient.h>
+#include <ArduinoJson.h>
 
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
@@ -122,6 +125,7 @@ uint8_t state, last_state;
 
 ESP8266WebServer server(80);
 WiFiClient client;
+HttpClient http(client);
 
 const char PAGE_HEADER[] PROGMEM =
   "<html>"
@@ -184,16 +188,21 @@ void handleRoot() {
   server.send(200, "text/html", newMessagePage());
 }
 
+void setMessage(const char* msg) { 
+  tft.fillScreen(ILI9341_BLUE);
+  tft.setTextColor(ILI9341_WHITE, ILI9341_BLUE);
+  tft.setTextSize(2);
+  tft.setCursor(0, 8);
+  tft.print(msg);
+}
+
 void handleMessage() {
   char msg[512];
   urldecode2(msg, server.arg("message").c_str());
   memcpy(FSM::info.message, msg, sizeof(msg));
   writeInfo();
-  
-  tft.fillScreen(ILI9341_BLUE);
-  tft.setCursor(0, 0);
-  tft.print(msg);
-  
+
+  setMessage(msg);
   server.send(200, "text/html", newMessagePage());
 }
 
@@ -228,7 +237,8 @@ void handleClearInfo() {
 void setup() {
   Serial.begin(9600);
   Serial.println("Setup");
-
+  delay(1000);
+  
   EEPROM.begin(sizeof(Info));
   readInfo();
   Serial.println("Loaded Info");
@@ -301,35 +311,45 @@ void loop() {
     }
   }
   else if (state == FSM::CONNECTED_CLIENT) {
-    if(client.connect(FSM::info.msghost, 80)) {
-      timerReset();
+    if(http.get(FSM::info.msghost, 80, FSM::info.msgpath) == 0) {
       state = FSM::INTERNET;
     } else {
       state = FSM::NOINTERNET;
     }
-  }
-  else if (state == FSM::INTERNET && !client) {
-    // disconnected
-    state = FSM::CONNECTED_CLIENT;
     timerReset();
   }
   else if (state == FSM::INTERNET && timerValue() > 1000) {
-    client.print(String("GET ") + FSM::info.msgpath + " HTTP/1.1\r\n" +
-                 "Host: " + FSM::info.msghost + "\r\n" +
-                 "Connection: close\r\n\r\n");
-    state = FSM::FETCHING;
+    if(http.responseStatusCode() == 200) {
+      http.skipResponseHeaders();
+      state = FSM::FETCHING;
+    } else {
+      state = FSM::CONNECTED_CLIENT;
+    }
+
     timerReset();
   }
   else if (state == FSM::FETCHING && timerValue() > 1000) {
-    while(client.available()) {
-      String line = client.readStringUntil('\r');
-      Serial.println(line);
+    String data;
+    timerReset();
+    while((http.connected() || http.available()) && timerValue() < 1000) {
+      data += (char)http.read();
     }
+    http.stop();
+    StaticJsonBuffer<128> jsonBuffer;
+    JsonArray& root = jsonBuffer.parseArray((char*)data.c_str());
+    if(root.success()) {
+      const char* msg = root[0];
+      setMessage(msg);
+    } else {
+      Serial.println("failed to parse");
+      Serial.println(data);
+    }
+
     state = FSM::CONNECTED_CLIENT;
     timerReset();
   }
   else if (state == FSM::NOINTERNET && timerValue() > 10000) {
-    state = FSM::CONNECTED_CLIENT;
+    state = FSM::CONNECT_CLIENT;
   } 
   else if ((state == FSM::INTERNET || state == FSM::NOINTERNET) && !FSM::info.login_valid) {
     // reboot into an AP
@@ -340,6 +360,10 @@ void loop() {
 
   
   if (last_state != state) {
+    tft.fillRect(0, 0, 320, 7, ILI9341_WHITE);
+    tft.setTextSize(1);
+    tft.setTextColor(ILI9341_BLUE, ILI9341_WHITE);
+    tft.setCursor(0,0);
     tft.print(FSM::StateStr[last_state]);
     tft.print(" -> ");
     tft.println(FSM::StateStr[state]);
