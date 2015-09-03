@@ -32,6 +32,7 @@ const char *password = "ofthefuture";
   g(CONNECT_AP), \
   g(CONNECTING_AP), \
   g(CONNECTED_AP), \
+  g(AP_STATIC_MESSAGE), \
   g(CONNECT_CLIENT), \
   g(CONNECTING_CLIENT), \
   g(CONNECTED_CLIENT), \
@@ -142,7 +143,7 @@ const char NEW_MESSAGE_HEADER[] PROGMEM =
   "      Message: <textarea rows=\"4\" cols=\"50\" name=\"message\">";
   
 const char NEW_MESSAGE_FOOTER[] PROGMEM =
-  "      </textarea><br/>"
+  "</textarea><br/>"
   "      <input type=\"submit\" value=\"Submit\">"
   "    </form>";
 
@@ -188,21 +189,176 @@ void handleRoot() {
   server.send(200, "text/html", newMessagePage());
 }
 
+uint8_t byteFromHex(const char* hex) {
+  uint8_t result = 0;
+  for(uint8_t ii = 0; ii < 2; ++ii) {
+    char ch = hex[ii];
+    if(ch >= 'A' && ch <= 'F') {
+      ch += 'a' - 'A';
+    }
+    result <<= 4;
+    if(ch >= '0' && ch <= '9') {
+      result |= (ch - '0');
+    } else {
+      result |= 10 + (ch - 'a');
+    }
+  }
+  return result;
+}
+
+// 0xFFFF = failed parse
+uint16_t colorFromHex(const char** str) {
+  // big enough?
+  for(uint8_t ii = 0; ii < 6; ++ii) {
+    if((*str)[ii] == '\0') return 0xFFFF;
+  }
+  
+  uint8_t red = byteFromHex(*str);
+  (*str) += 2;
+  uint8_t green = byteFromHex(*str);
+  (*str) += 2;
+  uint8_t blue = byteFromHex(*str);
+  (*str) += 2;
+  
+  return tft.color565(red, green, blue);
+}
+
+int16_t intFromStr(const char** str) {
+  // up to 3 digits
+  uint16_t value = 0;
+  for(uint8_t ii = 0; ii < 3; ++ii) {
+    if(!isdigit(**str)) return value;
+    value *= 10;
+    value += (**str - '0');
+    (*str)++;
+  }
+  return value;
+}
+
+uint8_t intTupleFromStr(const char** str, int16_t* tuple, uint8_t n) {
+  for(uint8_t ii = 0; ii < n; ++ii) {
+    tuple[ii] = intFromStr(str);
+    if(ii + 1 < n) {
+      // consume separator
+      if(**str != '_') return 0;
+      (*str)++;
+    }
+  }
+  return 1;
+}
+
 void setMessage(const char* msg) { 
   tft.fillScreen(ILI9341_BLUE);
   tft.setTextColor(ILI9341_WHITE, ILI9341_BLUE);
   tft.setTextSize(2);
-  tft.setCursor(0, 8);
-  tft.print(msg);
+  tft.setCursor(0,0);
+  uint16_t ink = 0xFFFF;
+  
+  for(;*msg;) {
+    if(*msg != '%') {
+      char ch = *msg;
+      tft.print(ch);
+      ++msg;
+      continue;
+    } else {
+      ++msg;
+      switch(*msg) {
+        case '%': {
+          tft.print('%');
+          msg++;
+          break;
+        }
+        
+        case 'f': // fill screen
+        {
+          ++msg;
+          uint16_t color = colorFromHex(&msg);
+          if(color == 0xFFFFFF) {
+            tft.print("!COL!");
+            break;
+          }
+          tft.fillScreen(color);
+          break;
+        }
+        
+        case 'c': // text color
+        {
+          ++msg;
+          uint16_t color = colorFromHex(&msg);
+          if(color == 0xFFFFFF) {
+            tft.print("!COL!");
+            break;
+          }
+          tft.setTextColor(color);
+          break;
+        }
+        
+        case 'i': // ink color
+        {
+          ++msg;
+          uint16_t color = colorFromHex(&msg);
+          if(color == 0xFFFFFF) {
+            tft.print("!COL!");
+          } else {
+            ink = color;
+          }
+        }
+        
+        case 's': // text size
+        {
+          ++msg;
+          uint16_t size = *msg - '0';
+          tft.setTextSize(size);
+          ++msg;
+          break;
+        }
+        
+        case 'p': // set cursor position
+        {
+          ++msg;
+          int16_t pos[2];
+          if(intTupleFromStr(&msg, pos, 2) == 0) {
+            tft.print("!TUP!");
+          } else {
+            tft.setCursor(pos[0], pos[1]);
+          }
+          break;
+        }
+        
+        case 'R':
+        case 'r': // draw rounded rect
+        {
+          char mode = *msg;
+          ++msg;
+          int16_t parms[5];
+          if(intTupleFromStr(&msg, parms, 5) == 0) {
+            tft.print("!TUP");
+          } else {
+            if(mode == 'r') {
+              tft.drawRoundRect(parms[0], parms[1], parms[2], parms[3], parms[4], ink);
+            } else {
+              tft.fillRoundRect(parms[0], parms[1], parms[2], parms[3], parms[4], ink);
+            }
+          }
+          break;
+        }
+        
+        default:
+        tft.print("!");
+      }
+    }
+  }
+  
+  
 }
 
 void handleMessage() {
   char msg[512];
   urldecode2(msg, server.arg("message").c_str());
   memcpy(FSM::info.message, msg, sizeof(msg));
-  writeInfo();
 
   setMessage(msg);
+  writeInfo();  
   server.send(200, "text/html", newMessagePage());
 }
 
@@ -288,10 +444,15 @@ void loop() {
     tft.print("AP Created: ");
     tft.println(myIP);
     state = FSM::CONNECTED_AP;
+    timerReset();
   }
-  else if (state == FSM::CONNECTED_AP && FSM::info.login_valid) {
+  else if ((state == FSM::CONNECTED_AP || state == FSM::AP_STATIC_MESSAGE) && FSM::info.login_valid) {
     // reboot which will make us reconnect as a client
     ESP.restart();
+  }
+  else if (state == FSM::CONNECTED_AP && timerValue() > 15000) {
+    setMessage(FSM::info.message);
+    state = FSM::AP_STATIC_MESSAGE;
   }
   else if (state == FSM::CONNECT_CLIENT) {
     WiFi.begin(FSM::info.ssid, FSM::info.password);
@@ -358,9 +519,9 @@ void loop() {
 
   server.handleClient();
 
-  
+  /*
   if (last_state != state) {
-    tft.fillRect(0, 0, 320, 7, ILI9341_WHITE);
+    tft.fillRect(0, 0, 320, 8, ILI9341_WHITE);
     tft.setTextSize(1);
     tft.setTextColor(ILI9341_BLUE, ILI9341_WHITE);
     tft.setCursor(0,0);
@@ -369,4 +530,5 @@ void loop() {
     tft.println(FSM::StateStr[state]);
     last_state = state;
   }
+  */
 }
